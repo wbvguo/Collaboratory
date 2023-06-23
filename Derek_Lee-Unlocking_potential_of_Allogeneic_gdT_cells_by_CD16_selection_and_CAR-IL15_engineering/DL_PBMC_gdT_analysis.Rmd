@@ -1,0 +1,872 @@
+---
+title: "Unlocking the Potential of Allogeneic Vδ2 T Cells for Ovarian Cancer Therapy through CD16 Biomarker Selection and CAR/IL-15 Engineering"
+output:
+  html_document: default
+  pdf_document: default
+date: "2022-08-15"
+---
+
+Creator: Wenbin Guo < wbguo@ucla.edu >
+
+Description: this script is used to perform the following tasks in RNA-seq analysis \
+- batch effects correction \
+- PCA analysis  \
+- Differential gene expression analysis \
+- DE gene Over-representation Enrichment analysis  \
+- Gene set enrichment analysis (GSEA) \
+- single sample GSEA (ssGSEA) \
+- data visualization such as heatmap, volcano plot, bar plot, etc. \
+
+Each tool's version can be found in the `sessionInfo` section or from the original paper titled: \
+> Unlocking the Potential of Allogeneic Vδ2 T Cells for Ovarian Cancer Therapy through CD16 Biomarker Selection and CAR/IL-15 Engineering
+
+
+Input file: \
+- `DL_tables-PBMC_gdT-Sample.csv`: the metadata of samples \
+- `raw_counts.txt`: gene expression raw counts matrix \
+- `gene_info_full.rds`: provide mappings between gene_id and gene_name, it's extracted from the GTF file \
+- `DL_tables-ImmuneCellAI-signature_list_final.csv`: signature gene list for each cell type extracted from the `ImmuneCellAI` paper \
+- `DL_tables-PBMC_gdT-Gene_list.csv`: gene list for heatmap \
+- `DL_tables-GO_pathway_gene_annotate.csv`: gene list to be highlighted in the GSEA pathway results \
+
+Output file: \
+- figures: check the `html` file \
+- tables: check the `write results` section \
+
+
+The input files can be accessed/obtained from the following options: \
+- [Github](https://github.com/wbvguo/Collaboratory/tree/main/Derek_Lee-Unlocking_potential_of_Allogeneic_gdT_cells_by_CD16_selection_and_CAR-IL15_engineering)\
+- [Zenodo](https://zenodo.org/deposit/8072772#) \
+- the author \
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# load 
+## package
+```{r}
+library(dplyr)
+library(tidyr)
+library(tidyverse)
+library(tibble)
+library(data.table)
+library(cowplot)
+library(corrplot)
+library(ggplot2)
+library(ggpubr)
+library(ggh4x)
+library(ggrepel)
+library(ggVennDiagram)
+library(ggalluvial)
+library(ggplotify)
+library(UpSetR)
+library(gridExtra)
+library(patchwork)
+library(viridis)
+library(circlize)
+library(RColorBrewer)
+
+# BiocManager & Github
+library(ComplexHeatmap)
+library(edgeR)
+library(DESeq2)
+```
+
+## function
+```{r}
+# make directory
+make_dir = function(dir){ 
+  if (! dir.exists(dir)){ 
+    dir.create(dir, recursive = TRUE)
+  }else{
+    print(paste0(dir, " exists! Skip creating..."))
+  }
+}
+
+# perform log10(x+1) transformation
+library(magrittr)
+log2_transform = function(df, psuedo_count = 1){
+  df_log = df %>% 
+    data.frame() %>%  lapply(function(x){log2(x+psuedo_count)}) %>% data.frame() %>% 
+    magrittr::set_rownames(rownames(df)) %>% 
+    magrittr::set_colnames(colnames(df))
+  return(df_log)
+}
+
+# filter by gene expression, perform cpm and log10(cpm+1) transformation
+process_countData_logCPM = function(count_df, group = NULL, min_count = 10, min_prop = 0.1){
+  library(edgeR)
+  if(is.null(group)){group = rep(1, ncol(count_df))}
+  dge_count = DGEList(counts = count_df, group = group)
+  dge_cpm   = cpm(dge_count)
+  
+  keep_idx  = filterByExpr(dge_count, min.count = min_count, min.prop = min_prop)
+  dge_keep  = dge_count[keep_idx, ,keep.lib.sizes=FALSE]
+  dge_keep  = calcNormFactors(dge_keep)
+  
+  dge_keep_cpm = cpm(dge_keep)
+  dge_keep_cpm_log = log2_transform(dge_keep_cpm)
+  return(list(dge_count= dge_count, 
+              dge_cpm  = dge_cpm, 
+              dge_keep = dge_keep,
+              dge_keep_cpm = dge_keep_cpm, 
+              dge_keep_cpm_log = dge_keep_cpm_log))
+}
+
+# get the the var_gene_list and topN (or top percent) most variable genes
+get_topN_var_mat = function(count_df, topN=NULL, prop = 0.2){
+  var_genes_list = apply(count_df, MARGIN = 1, var)
+  if(is.null(topN)){
+    topN = round(nrow(count_df)*prop)
+  }
+  topN_genes = names(sort(var_genes_list, decreasing=TRUE))[1:topN]
+  return(list(var_genes = var_genes_list,
+              topN_mat  = count_df[topN_genes,] %>% as.matrix()))
+}
+
+# perform PCA
+perform_PCA = function(count_mat, attr_df = NULL, axes = c(1, 2)){
+  library(factoextra)
+  pca_res = prcomp(t(count_mat), scale = TRUE, center = TRUE)
+  pca_res_summary = summary(pca_res)
+  
+  plot_pca_res = fviz_pca_ind(pca_res, repel = TRUE, geom = "point", axes = axes)
+  plot_pca_res$labels$x = str_replace(plot_pca_res$labels$x, pattern = "Dim", replacement = "PC")
+  plot_pca_res$labels$y = str_replace(plot_pca_res$labels$y, pattern = "Dim", replacement = "PC")
+  if(is.null(attr_df)){
+    attr_df = sample_attr
+  }
+  plot_pca_res$data = dplyr::left_join(plot_pca_res$data, attr_df %>% dplyr::rename(name = Sample_id))
+  
+  return(list(pca_res = pca_res, pca_res_plot = plot_pca_res))
+}
+
+# adjust batch effects
+adjust_batch = function(count_df, batch, group=NULL,covar_mod=NULL){
+  library(sva)
+  countData_adj = ComBat_seq(count_df %>% as.matrix(), batch=batch, 
+                             group=group, covar_mod = covar_mod)
+  return(countData_adj)
+}
+```
+
+
+## path
+```{r}
+project_path = "/home/wbguo/iproject/Cancer_immune"
+
+data_path = paste0(project_path, "/data/")
+save_path = data_path
+bool_rerun = FALSE
+
+# Input
+gene_info_rds = paste0(data_path, "/gene_info_full.rds") # collected from annotation file gencode v32 gtf
+countData_txt = paste0(data_path, "/raw_counts.txt")
+countData_rds = paste0(data_path, "/countData.rds")
+sig_gene_file2= paste0(data_path, "/DL_tables-ImmuneCellAI-signature_list_final.csv")
+pbmc_sample_file = paste0(data_path, "/DL_tables-PBMC_gdT-Sample.csv")
+htmap_gene_file  = paste0(data_path, "/DL_tables-PBMC_gdT-Gene_list.csv")
+pathway_gene_annotate_file = paste0(data_path, "/DL_tables-GO_pathway_gene_annotate.csv")
+
+# Color setting
+color_list = setNames(c("#F1BB7B","#E06666", "#38B17D", "#7B7B7B"), 
+                      c("T","CD16_Low", "CD16_High", "NK-Act"))
+color_list_gdT  = setNames(c("#E06666", "#38B17D"), 
+                           c("CD16_Low", "CD16_High"))
+```
+
+
+# read in
+```{r}
+# read in gene_info
+gene_info_obj= readRDS(gene_info_rds)
+gene_info    = gene_info_obj$gene_info_keep
+gene_id_name = gene_info_obj$gene_id_name
+gene_name_id = gene_info_obj$gene_name_id
+
+
+# read in countData
+if(bool_rerun){
+  countData_all = read.table(countData_txt, sep = "\t", 
+                             header = TRUE, row.names = 1, check.names = FALSE)
+  saveRDS(countData_all, countData_rds)
+}else{
+  countData_all = readRDS(countData_rds)
+}
+
+# read in meta data
+pbmc_sample  = read.csv(pbmc_sample_file,sep = ",", header = TRUE) %>% 
+  dplyr::mutate(Sample_label = ifelse(CD16_flag == "", Sample_label, CD16_flag))
+
+
+# filter lowly expressed genes (at least 10 counts in 2 samples)
+min_count = 10
+min_prop  = 0.1 # 20samples, this gives "at least 2 samples"
+
+pbmc_count = countData_all[,pbmc_sample$Sample_id]
+pbmc_countData = process_countData_logCPM(pbmc_count, min_count = min_count, min_prop = min_prop)
+cat("\n")
+print(dim(pbmc_countData$dge_keep_cpm))
+```
+
+
+# PCA on batch corrected data
+```{r}
+pbmc_count_adj0 = adjust_batch(pbmc_count, batch = pbmc_sample$Batch, group = pbmc_sample$Cell_type)
+pbmc_countData_adj0 = process_countData_logCPM(pbmc_count_adj0, min_count = min_count, min_prop = min_prop)
+cat("\n")
+print(dim(pbmc_countData_adj0$dge_keep_cpm))
+
+pbmc_topN_var_res_adj0 = get_topN_var_mat(pbmc_countData_adj0$dge_keep_cpm_log, topN = 500)
+pbmc_pca_res_adj0 = perform_PCA(pbmc_topN_var_res_adj0$topN_mat, attr_df = pbmc_sample)
+```
+
+
+## PCA plots
+```{r}
+plot_pbmc_pca_res_adj0_color = pbmc_pca_res_adj0$pca_res_plot + 
+  geom_point(aes(color = Sample_label), size = 6) +
+  scale_color_manual(name = "Sample_label", values= color_list) +
+  theme(axis.line = element_line(linewidth = 0.5, linetype = "solid"),
+        axis.title= element_text(size = 18),
+        axis.text = element_text(size = 12),
+        panel.background = element_rect(fill = NA),
+        panel.grid.major = element_line(linetype = "blank"),
+        panel.grid.minor = element_line(linetype = "blank"),
+        strip.background = element_rect(fill = "white"),
+        legend.title = element_text(face = "bold", color = NA),
+        legend.background = element_rect(fill = NA, color = NA),
+        legend.key = element_rect(fill = NA, color = NA),
+        legend.text.align = 0,
+        legend.position = "bottom",
+        legend.justification = c(0.75,0),
+        legend.direction = "horizontal",
+        legend.text = element_text(margin = margin(0, 0, 0, 0, "pt"), size = 11),
+        aspect.ratio=1) +
+  labs(title = NULL, colour = NULL, fill = NULL, linetype = NULL, shape = NULL) 
+
+
+plot_pbmc_pca_res_adj0_label = pbmc_pca_res_adj0$pca_res_plot + geom_point(aes(color = Sample_label), size = 2) + 
+  ggrepel::geom_text_repel(aes(label = name), max.overlaps = 20) +
+  scale_color_manual(name = "Sample_label", values= color_list) +
+  theme(axis.line = element_line(linewidth = 0.5, linetype = "solid"),
+        axis.title= element_text(size = 15),
+        axis.text = element_text(size = 12),
+        panel.background = element_rect(fill = NA),
+        panel.grid.major = element_line(linetype = "blank"),
+        panel.grid.minor = element_line(linetype = "blank"),
+        strip.background = element_rect(fill = "white"),
+        legend.title = element_text(face = "bold", color = NA),
+        legend.background = element_rect(fill = NA, color = NA),
+        legend.key = element_rect(fill = NA, color = NA),
+        legend.text.align = 0,
+        legend.position = "bottom",
+        legend.justification = c(0.75,0),
+        legend.direction = "horizontal",
+        legend.text = element_text(margin = margin(0, 0, 0, 0, "pt"), size = 11),
+        aspect.ratio=1) +
+  labs(title = NULL, colour = NULL, fill = NULL, linetype = NULL, shape = NULL)
+```
+
+
+```{r}
+plot_pbmc_pca_res_adj0_color 
+plot_pbmc_pca_res_adj0_label
+```
+
+
+## PCA for gdT
+```{r}
+gdT_sample = pbmc_sample %>% dplyr::filter(Cell_type == "gdT")
+gdT_topN_var_res_adj0 = get_topN_var_mat(pbmc_countData_adj0$dge_keep_cpm_log[gdT_sample$Sample_id], topN = 500)
+
+gdT_pca_res_adj0= perform_PCA(gdT_topN_var_res_adj0$topN_mat, attr_df = gdT_sample)
+```
+
+
+```{r}
+plot_gdT_pca_res_adj0_color = gdT_pca_res_adj0$pca_res_plot + 
+  geom_point(aes(color = Sample_label), size = 6) +
+  scale_color_manual(name = "Sample_label", values= color_list_gdT) +
+  theme(axis.line = element_line(linewidth = 0.5, linetype = "solid"),
+        axis.title= element_text(size = 18),
+        axis.text = element_text(size = 12),
+        panel.background = element_rect(fill = NA),
+        panel.grid.major = element_line(linetype = "blank"),
+        panel.grid.minor = element_line(linetype = "blank"),
+        strip.background = element_rect(fill = "white"),
+        legend.title = element_text(face = "bold", color = NA),
+        legend.background = element_rect(fill = NA, color = NA),
+        legend.key = element_rect(fill = NA, color = NA),
+        legend.text.align = 0,
+        legend.position = "bottom",
+        legend.justification = c(0.75,0),
+        legend.direction = "horizontal",
+        legend.text = element_text(margin = margin(0, 0, 0, 0, "pt"), size = 11),
+        aspect.ratio=1) +
+  labs(title = NULL, colour = NULL, fill = NULL, linetype = NULL, shape = NULL)
+
+
+plot_gdT_pca_res_adj0_label = gdT_pca_res_adj0$pca_res_plot + 
+  geom_point(aes(color = Sample_label), size = 2) + 
+  ggrepel::geom_text_repel(aes(label = name), max.overlaps = 20) +
+  scale_color_manual(name = "Sample_label", values= color_list_gdT) +
+  theme(axis.line = element_line(linewidth = 0.5, linetype = "solid"),
+        axis.title= element_text(size = 15),
+        axis.text = element_text(size = 12),
+        panel.background = element_rect(fill = NA),
+        panel.grid.major = element_line(linetype = "blank"),
+        panel.grid.minor = element_line(linetype = "blank"),
+        strip.background = element_rect(fill = "white"),
+        legend.title = element_text(face = "bold", color = NA),
+        legend.background = element_rect(fill = NA, color = NA),
+        legend.key = element_rect(fill = NA, color = NA),
+        legend.text.align = 0,
+        legend.position = "bottom",
+        legend.justification = c(0.75,0),
+        legend.direction = "horizontal",
+        legend.text = element_text(margin = margin(0, 0, 0, 0, "pt"), size = 11),
+        aspect.ratio=1) +
+  labs(title = NULL, colour = NULL, fill = NULL, linetype = NULL, shape = NULL)
+```
+
+
+```{r}
+plot_gdT_pca_res_adj0_color
+plot_gdT_pca_res_adj0_label
+```
+
+
+# CD16 distribution
+```{r}
+pbmc_cd16_gene_name = "FCGR3A"
+
+pbmc_cd16_gene_df = dplyr::left_join(pbmc_sample[,1:11],
+                              pbmc_countData$dge_keep_cpm[gene_name_id[pbmc_cd16_gene_name],] %>% 
+                                as.data.frame() %>% set_colnames("CD16_unadjusted") %>% rownames_to_column("Sample_id"),
+                              by = "Sample_id") %>% 
+  dplyr::left_join(pbmc_countData_adj0$dge_keep_cpm[gene_name_id[pbmc_cd16_gene_name],] %>% 
+              as.data.frame() %>% set_colnames("CD16") %>% rownames_to_column("Sample_id"),
+            by = "Sample_id") %>% 
+  dplyr::mutate(Sample_label = factor(Sample_label, levels = c("T", "CD16_Low", "CD16_Med", "CD16_High", "NK-Act")))
+```
+
+
+## use kmeans to confirm the high/low group
+```{r}
+gdT_cd16_expr_vec = pbmc_cd16_gene_df %>% filter(Cell_type == "gdT") %>% pull(CD16, Sample_id)
+kmeans(gdT_cd16_expr_vec, centers = 2)
+```
+
+
+## plot
+```{r}
+library(ggprism)
+my_comparison = list(c("T", "CD16_Low"), 
+                     c("CD16_Low", "CD16_High"), 
+                     c("CD16_High", "NK-Act"))
+
+my_comparison_test = compare_means(CD16 ~ Sample_label, method = "t.test", data = pbmc_cd16_gene_df) %>% 
+  dplyr::filter(paste0(group1, ".vs.",group2) %in% sapply(my_comparison, FUN = function(x){paste0(x[1], ".vs.",x[2])})) %>% 
+  dplyr::mutate(y.position = c (1150, 1150,1150))
+
+plot_cd16_boxplot = ggplot(pbmc_cd16_gene_df, aes(x = Sample_label, y = CD16)) +
+  geom_boxplot(width = 0.5, colour = "black") + 
+  geom_dotplot(aes(fill = Sample_label), binaxis='y', dotsize = 1.5, stackdir='center', position=position_dodge(1)) +
+  stat_pvalue_manual(my_comparison_test, label = "p.signif", 
+                     bracket.shorten = 0.1, bracket.size = 1, tip.length = 0.01, size = 6) + 
+  scale_y_continuous(limits = c(0, 1200)) +
+  scale_color_prism("floral") + 
+  scale_fill_prism("floral") + 
+  scale_fill_manual(values = color_list) +
+  guides(y = "prism_offset_minor") + 
+  theme_prism(base_size = 14) + 
+  theme(legend.position = "none")+
+  labs(x = NULL) +
+  ylab("CD16 (CPM)")
+
+plot_cd16_boxplot
+```
+
+
+# Heatmap
+```{r}
+gene_interest_full= read.csv(htmap_gene_file, sep = ",", header = TRUE) %>% 
+  dplyr::left_join(gene_info, by = "gene_name") %>% 
+  dplyr::mutate(category = factor(category, 
+                           levels = c("Transcription factor", "Cytotoxicity", "NK activating", "NK inhibition", 
+                                      "Inhibitory marker", "T-costimulatory", "Inflammatory homing")))
+gene_interest_refine = gene_interest_full %>% dplyr::filter(gene_id %in% rownames(pbmc_countData_adj0$dge_keep_cpm))
+gene_id_interest = gene_interest_refine %>% dplyr::select(gene_id) %>% na.omit() %>% unlist() %>% unname()
+
+sample_id_order  = pbmc_cd16_gene_df %>% group_by(Cell_type) %>% 
+  dplyr::mutate(Cell_type = factor(Cell_type, levels = c("NK_Act", "gdT", "T"))) %>% 
+  dplyr::arrange(desc(CD16), .by_group = TRUE) %>% pull(Sample_id)
+sample_id_order_gdT = pbmc_cd16_gene_df %>% 
+  dplyr::filter(Cell_type == "gdT") %>% 
+  dplyr::arrange(desc(CD16)) %>% pull(Sample_id)
+sample_id_order_gdT_plot = sample_id_order_gdT[c(1:3,4:13)]
+
+get_heatmap_mat = function(heatmap_df){
+  heatmap_df_std = heatmap_df %>% t() %>% scale() %>% as.data.frame() %>% t()
+  rownames(heatmap_df_std) = gene_id_name[rownames(heatmap_df_std)]
+  return(heatmap_df_std)
+}
+```
+
+
+## all samples
+```{r}
+df_interest_gene = pbmc_countData_adj0$dge_keep_cpm_log[gene_id_interest, sample_id_order]
+df_interest_genes_std = get_heatmap_mat(df_interest_gene)
+print(range(df_interest_genes_std))
+
+col_scale= c(-3, 0, 3)
+col_fun  = colorRamp2(col_scale, hcl_palette = "RdBu", reverse = T)
+
+df_cd16_std = pbmc_countData_adj0$dge_keep_cpm_log[gene_name_id[pbmc_cd16_gene_name],sample_id_order] %>% 
+  t() %>% scale() %>% as.data.frame() %>% as.matrix() %>% set_colnames("CD16")
+
+ha_cd16  = HeatmapAnnotation(CD16_expr_z = df_cd16_std, 
+                             col = list(CD16_expr_z = col_fun), show_legend = FALSE)
+
+ht_marker = Heatmap(df_interest_genes_std %>% as.matrix(), 
+                    cluster_rows = FALSE,
+                    cluster_columns = FALSE,
+                    show_row_dend = FALSE, 
+                    show_column_dend = FALSE, 
+                    show_row_names = TRUE,
+                    show_column_names = TRUE, 
+                    column_names_side = "top",
+                    use_raster = FALSE, 
+                    col = col_fun,
+                    row_title_rot = 0,
+                    row_split = gene_interest_refine$category,
+                    #column_split = gene_interest$category,
+                    heatmap_legend_param = list(title = "z-score",
+                                                at = col_scale),
+                    width = ncol(df_interest_genes_std)*unit(5, "mm"),
+                    height = nrow(df_interest_genes_std)*unit(5, "mm"),
+                    top_annotation = ha_cd16)
+```
+
+
+## gdT only
+```{r}
+df_interest_gene_gdT = pbmc_countData_adj0$dge_keep_cpm_log[gene_id_interest, sample_id_order_gdT_plot]
+df_interest_genes_gdT_std = get_heatmap_mat(df_interest_gene_gdT)
+print(range(df_interest_genes_gdT_std))
+
+col_scale_gdT = c(-3, 0, 3)
+col_fun_gdT   = colorRamp2(col_scale_gdT, hcl_palette = "RdBu", reverse = T)
+
+
+df_cd16_std_gdT = pbmc_countData_adj0$dge_keep_cpm_log[gene_name_id[pbmc_cd16_gene_name],sample_id_order_gdT_plot] %>% 
+  t() %>% scale() %>% as.data.frame() %>% as.matrix() %>% set_colnames("CD16")
+
+ha_cd16_gdT = HeatmapAnnotation(CD16_expr_z = df_cd16_std_gdT, 
+                                col = list(CD16_expr_z = col_fun_gdT), show_legend = FALSE)
+
+ht_marker_gdT = Heatmap(df_interest_genes_gdT_std %>% as.matrix(), 
+                        cluster_rows = TRUE,
+                        cluster_columns = FALSE,
+                        show_row_dend = FALSE, 
+                        show_column_dend = FALSE, 
+                        show_row_names = TRUE,
+                        show_column_names = TRUE, 
+                        column_names_side = "top",
+                        use_raster = FALSE, 
+                        col = col_fun_gdT,
+                        row_title_rot = 0,
+                        row_split = gene_interest_refine$category,
+                        #column_split = gene_interest$category,
+                        heatmap_legend_param = list(title = "z-score",
+                                                    at = col_scale_gdT),
+                        width = ncol(df_interest_genes_gdT_std)*unit(5, "mm"),
+                        height = nrow(df_interest_genes_gdT_std)*unit(5, "mm"),
+                        top_annotation = ha_cd16_gdT) 
+```
+
+```{r}
+draw(ht_marker)
+draw(ht_marker_gdT)
+```
+
+
+# DE analysis continous (with CD16 expr)
+```{r}
+perform_DE_DESeq2_cont  = function(dge_obj, covar_df){
+  dds = DESeqDataSetFromMatrix(countData = dge_obj$counts,
+                               colData   = cbind(dge_obj$samples, covar_df),
+                               design    = ~ CD16_logCPM)
+  dds = DESeq(dds)
+  res = results(dds) %>% as.data.frame() 
+    
+  DE_gene_list = res %>% dplyr::filter(padj < 0.05) %>% rownames()
+  return(list(res = res, DE_gene_list = DE_gene_list, dge_obj = dds))
+}
+```
+
+## run test
+```{r}
+count_keep_gdT      = pbmc_countData_adj0$dge_count$counts[, gdT_sample$Sample_id]
+countData_trans_gdT = process_countData_logCPM(count_df = count_keep_gdT, min_count = 10, min_prop = 0.5)
+
+covar_df_gdT = countData_trans_gdT$dge_keep$samples %>% rownames_to_column("Sample_id") %>% 
+  left_join(pbmc_cd16_gene_df, by = "Sample_id") %>% 
+  column_to_rownames("Sample_id") %>% 
+  dplyr::mutate(Intercept = 1, CD16_logCPM = log2(CD16 +1)) %>% 
+  mutate_at(c('CD16_logCPM'), ~(scale(.) %>% as.vector)) %>% 
+  select(Intercept, CD16_logCPM)
+  
+countData_trans_gdT$covar_df = covar_df_gdT
+
+DE_deseq2_cont= perform_DE_DESeq2_cont(countData_trans_gdT$dge_keep, countData_trans_gdT$covar_df)
+# just a message: https://support.bioconductor.org/p/104097/
+```
+
+
+## volcano plot
+```{r}
+library(EnhancedVolcano)
+get_valcano_plot = function(df, plot_title, thre_pval, thre_logFC, 
+                            ylim_vec = c(-0.5, 3), xlim_vec = c(-10,10)){
+  valcano_plot= EnhancedVolcano(df, lab = gene_id_name[rownames(df)], 
+                                x = "log2FoldChange", y = "padj",
+                                xlab = bquote(~Log[2] ~ "fold change"),
+                                ylab = bquote(~-Log[10] ~ italic("adjusted P-value")),
+                                pCutoff = thre_pval, 
+                                FCcutoff =thre_logFC, # Cut-off for absolute log2 fold-change
+                                pointSize = 1,
+                                labSize = 4,
+                                legendLabSize = 10,
+                                title = plot_title,
+                                subtitle = NULL,
+                                xlim = xlim_vec,
+                                ylim = ylim_vec,
+                                drawConnectors = TRUE,
+                                arrowheads = FALSE,
+                                legendLabels = c("NS", expression(Log[2] ~ FC), "adjusted P-value", 
+                                                 expression("adjusted P-value" ~ and ~ log[2] ~ FC)),
+                                caption = NULL)
+  valcano_plot= valcano_plot + theme(plot.title = element_text(hjust = 0.5))
+  return(valcano_plot)
+}
+```
+
+```{r}
+thre_pval = 0.05
+thre_logFC= 1
+plot_valcano_deseq2_cont= get_valcano_plot(DE_deseq2_cont$res,  "~ CD16 expression", 
+                                           thre_pval, thre_logFC, ylim_vec = c(-0.5, 12),xlim_vec = c(-2,2))
+```
+
+```{r}
+plot_valcano_deseq2_cont
+```
+
+
+```{r}
+DE_deseq2_cont$res = DE_deseq2_cont$res %>% 
+  mutate_at(c("pvalue"), ~replace(., . == 0, min(.[.>0], na.rm = TRUE)/10))
+## Converting the zero p-values to 10^-1 * current lowest non-zero p-value, for example CD16
+```
+
+
+
+# Enrichment analysis
+```{r}
+library(org.Hs.eg.db)
+library(msigdbr)
+library(clusterProfiler)
+library(enrichplot)
+library(GseaVis)
+
+
+get_sorted_list = function(res, method = "edgeR/DESeq2", key_type = "ENSEMBL"){
+  if (method == "clipper"){
+    sorted_list = res %>% rownames_to_column("gene_id")  %>% pull(contrast_score, gene_id) %>% sort(decreasing = TRUE) 
+  } else{
+    sorted_list = res %>% mutate(score = sign(log2FoldChange) * -1 * log10(pvalue)) %>% 
+      rownames_to_column("gene_id")  %>% pull(score, gene_id) %>% sort(decreasing = TRUE) 
+  }
+  if(key_type == "SYMBOL"){
+    sorted_list = setNames(unname(sorted_list), gene_id_name[names(sorted_list)])
+  }
+  
+  return(sorted_list)
+}
+
+
+get_gsea_result = function(sorted_DE_list, ont_type, key_type = "ENSEMBL", p_val_cut = 0.05){
+  gsea_res = gseGO(geneList= sorted_DE_list,
+                   ont = ont_type,
+                   keyType = key_type,
+                   minGSSize = 3,
+                   maxGSSize = 800,
+                   pvalueCutoff = p_val_cut,
+                   eps = 0,
+                   seed = TRUE,
+                   verbose = TRUE,
+                   OrgDb =  org.Hs.eg.db,
+                   pAdjustMethod = "BH")
+  return(gsea_res)
+}
+
+get_enrichGO_result = function(gene_list, ont_type, key_type = "ENSEMBL", p_val_cut = 0.05){
+  ego_res = enrichGO(gene          = gene_list,
+                     OrgDb         = org.Hs.eg.db,
+                     keyType       = key_type,
+                     ont           = ont_type,
+                     pAdjustMethod = "BH",
+                     pvalueCutoff  = 0.05,
+                     qvalueCutoff  = 0.05)
+  return(ego_res)
+}
+
+convert_enrich_id_name = function(enrich_obj, method = "gsea"){
+  if(method == "gsea"){
+    obj = enrich_obj
+    obj@result$core_enrichment = sapply(obj@result$core_enrichment, 
+                                        FUN = function(x){paste(gene_id_name[unlist(strsplit(x, "/"))], collapse = "/")})
+    obj@geneList = setNames(unname(obj@geneList), unname(gene_id_name[names(obj@geneList)]))
+  }else{
+    obj = enrich_obj
+    obj@result$geneID = sapply(obj@result$geneID, 
+                               FUN = function(x){paste(gene_id_name[unlist(strsplit(x, "/"))], collapse = "/")})
+    obj@gene = unname(gene_id_name[obj@gene])
+    obj@universe = unname(gene_id_name[obj@universe])
+  }
+  return(obj)
+}
+```
+
+## DE over-representation analysis
+```{r}
+ont_type = "BP"
+ego_obj_deseq2_cont= get_enrichGO_result(DE_deseq2_cont$res %>% dplyr::filter(padj < 0.05) %>% rownames(), ont_type)
+```
+
+
+```{r}
+ego_obj_deseq2_cont2 = get_enrichGO_result(gene_id_name[DE_deseq2_cont$res %>% dplyr::filter(padj < 0.05) %>% rownames()], 
+                                           key_type = "SYMBOL", ont_type)
+plot_ego_deseq2_cnet = cnetplot(ego_obj_deseq2_cont2)
+plot_ego_deseq2_cnet
+```
+
+
+## GSEA
+```{r}
+ont_type = "BP"
+gsea_obj_deseq2_cont = get_gsea_result(get_sorted_list(DE_deseq2_cont$res), ont_type)
+```
+
+
+```{r}
+plot_gsea_deseq2_cont = dotplot(gsea_obj_deseq2_cont, title = "Deseq2 (cont)",showCategory=30, split=".sign", label_format =60) + 
+  facet_grid(.~.sign) + 
+  theme(plot.title = element_text(hjust = 0.5),
+        axis.text.y= element_text(size = 11))
+```
+
+
+```{r}
+plot_gsea_deseq2_cont 
+```
+
+
+## plot pathway
+```{r}
+gsea_obj_deseq2_cont2 = get_gsea_result(get_sorted_list(DE_deseq2_cont$res, key_type = "SYMBOL"), 
+                                        ont_type, key_type = "SYMBOL")
+```
+
+```{r}
+gsea_annotate_genes = read.table(pathway_gene_annotate_file, sep = ",", header = TRUE)
+```
+
+
+```{r}
+pathway_cytotoxity = "GO:0001909"
+pathway_phagocytosis = "GO:0006909"
+pathway_degranulation = "GO:0043299"
+pathway_proliferation = "GO:0046651"
+pathway_fc_gamma = "GO:0038094"
+
+
+plot_es_cytotoxity    = gseaNb(object = gsea_obj_deseq2_cont2,
+                               geneSetID = pathway_cytotoxity,
+                               addGene = gsea_annotate_genes %>% 
+                                 dplyr::filter(ID == pathway_cytotoxity) %>% 
+                                 select(gene_name) %>% deframe(),
+                               subPlot = 2, termWidth = 60,
+                               addPval = T,
+                               pvalX = 0.65,pvalY = 0.65,
+                               pCol = 'black',
+                               pHjust = 0)
+
+plot_es_degranulation = gseaNb(object = gsea_obj_deseq2_cont2,
+                               geneSetID = pathway_degranulation,
+                               addGene = gsea_annotate_genes %>% 
+                                 dplyr::filter(ID == pathway_degranulation) %>% 
+                                 select(gene_name) %>% deframe(),
+                               subPlot = 2, termWidth = 60,
+                               addPval = T,
+                               pvalX = 0.65,pvalY = 0.65,
+                               pCol = 'black',
+                               pHjust = 0)
+
+plot_es_proliferation = gseaNb(object = gsea_obj_deseq2_cont2,
+                               geneSetID = pathway_proliferation,
+                               addGene = gsea_annotate_genes %>% 
+                                 dplyr::filter(ID == pathway_proliferation) %>% 
+                                 select(gene_name) %>% deframe(),
+                               subPlot = 2, termWidth = 60,
+                               addPval = T,
+                               pvalX = 0.65,pvalY = 0.65,
+                               pCol = 'black',
+                               pHjust = 0)
+
+plot_es_fc_gamma      = gseaNb(object = gsea_obj_deseq2_cont2,
+                               geneSetID = pathway_fc_gamma,
+                               addGene = gsea_annotate_genes %>% 
+                                 dplyr::filter(ID == pathway_fc_gamma) %>% 
+                                 select(gene_name) %>% deframe(),
+                               subPlot = 2, termWidth = 60,
+                               addPval = T,
+                               pvalX = 0.65,pvalY = 0.65,
+                               pCol = 'black',
+                               pHjust = 0)
+
+plot_es_phagocytosis  = gseaNb(object = gsea_obj_deseq2_cont2,
+                               geneSetID = pathway_phagocytosis,
+                               addGene = gsea_annotate_genes %>% 
+                                 dplyr::filter(ID == pathway_phagocytosis) %>% 
+                                 select(gene_name) %>% deframe(),
+                               subPlot = 2, termWidth = 60,
+                               addPval = T,
+                               pvalX = 0.65,pvalY = 0.65,
+                               pCol = 'black',
+                               pHjust = 0)
+
+```
+
+
+```{r}
+plot(plot_es_cytotoxity)
+plot(plot_es_degranulation)
+plot(plot_es_proliferation)
+plot(plot_es_fc_gamma)
+plot(plot_es_phagocytosis)
+```
+
+
+# ssGSEA
+```{r}
+library(readxl)
+library(tidyverse)
+library(dplyr)
+library(GSVA)
+library(ggtern)
+library(ggforce)
+```
+
+## ImmuneCellAI signature
+```{r}
+library(RecordLinkage)
+
+closestMatch = function(string, stringVector){
+  distance = levenshteinSim(string, stringVector);
+  return(list(stringVector[distance==max(distance)], which(distance==max(distance))))
+}
+
+sig_gene_df2 = read.table(sig_gene_file2, sep = ",", header = TRUE) %>% 
+  gather() %>% 
+  dplyr::rename(cell_type = key, gene_name = value) %>% 
+  dplyr::filter(gene_name != "")
+
+
+for(i in seq(nrow(sig_gene_df2))){
+  gene_name = sig_gene_df2[i, "gene_name"] %>% unlist() %>% trimws()
+  match_info= closestMatch(gene_name, gene_info$gene_name)
+  match_name= match_info[[1]]
+  match_idx = match_info[[2]]
+  if(length(match_name)== 1){
+    sig_gene_df2[i, c("match_name", "gene_id")] = gene_info[match_idx, c("gene_name", "gene_id")]
+  }else{
+    best_guess = sapply(match_name, FUN = function(x){grepl(x, gene_name, fixed = TRUE)})
+    if(sum(best_guess) == 1){
+      print(paste0(gene_name, ":", paste(match_name, collapse = " "), ":", match_name[best_guess]))
+      sig_gene_df2[i, c("match_name", "gene_id")] = gene_info[match_idx[best_guess], c("gene_name", "gene_id")] 
+    }else{
+      print(paste0(gene_name, ":", paste(match_name, sep = " ")))
+    }
+  }
+}
+
+sig_gene_df2[sig_gene_df2$gene_name == "DFNB31", c("match_name", "gene_id")] = c("WHRN", gene_name_id["WHRN"])
+sig_gene_df2[sig_gene_df2$gene_name == "GGT1", c("match_name", "gene_id")] = c("GGT1", "ENSG00000100031")
+```
+
+
+```{r}
+marker_list2 = split(sig_gene_df2$gene_id, sig_gene_df2$cell_type)
+
+gsva_res2 = gsva(pbmc_countData_adj0$dge_keep_cpm[,sample_id_order], marker_list2, verbose=FALSE, method="ssgsea")%>% 
+  t() %>% as.data.frame() %>% rownames_to_column("Sample_id") %>% 
+  left_join(pbmc_cd16_gene_df, by = "Sample_id") %>% 
+  column_to_rownames("Sample_id")
+```
+
+## corrplot for all cell types and gdT samples
+```{r}
+cor_immune_cell_mat = cor(gsva_res2[,c(1:24, 36)])
+cor_immune_cell_mat_gdT = cor(gsva_res2[sample_id_order_gdT,c(1:24, 36)])
+
+corrplot(cor_immune_cell_mat, 
+         order = "hclust", diag = FALSE, addrect = 4, 
+         col = rev(COL2('RdBu')))
+
+corrplot(cor_immune_cell_mat_gdT, 
+         order = "hclust", diag = FALSE, addrect = 4, 
+         col = rev(COL2('RdBu')))
+```
+
+
+# write results
+```{r}
+write.table(pbmc_countData_adj0$dge_count$counts %>% as.data.frame() %>%
+              rownames_to_column("gene_id"),
+            file = paste0(save_path, "raw_counts_batch_adjusted.txt"),
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+write.table(pbmc_countData_adj0$dge_keep_cpm %>% as.data.frame() %>%
+              rownames_to_column("gene_id"),
+            file = paste0(save_path, "dge_keep_cpm_batch_adjusted.tsv"),
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+write.table(DE_deseq2_cont$res %>% 
+              slice_min(pvalue, n = nrow(DE_deseq2_cont$res)) %>% 
+              rownames_to_column("gene_id") %>% 
+              mutate(gene_name = gene_id_name[gene_id], .after = gene_id),
+            file = paste0(save_path, "DESeq2_diff_expr_results.tsv"),
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+write.table(ego_obj_deseq2_cont2@result,
+            file = paste0(save_path, "Over-representation_GOBP_results.tsv"),
+            sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+
+write.table(gsea_obj_deseq2_cont@result,
+        file = paste0(save_path, "GSEA_GOBP_deseq2_cont.tsv"),
+        sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
+```
+
+
+# sessionInfo
+```{r}
+sessionInfo()
+```
+
