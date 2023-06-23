@@ -1,0 +1,31 @@
+ID,Description,gene_name
+GO:0001909,leukocyte mediated cytotoxicity,PRF1
+GO:0001909,leukocyte mediated cytotoxicity,NKG7
+GO:0001909,leukocyte mediated cytotoxicity,NCR1
+GO:0001909,leukocyte mediated cytotoxicity,CD226
+GO:0001909,leukocyte mediated cytotoxicity,IL12RB1
+GO:0001909,leukocyte mediated cytotoxicity,GZMB
+GO:0043299,leukocyte degranulation,ITGB2
+GO:0043299,leukocyte degranulation,LAT
+GO:0043299,leukocyte degranulation,KLRC2
+GO:0043299,leukocyte degranulation,RAC2
+GO:0043299,leukocyte degranulation,VAMP8
+GO:0043299,leukocyte degranulation,LAMP1
+GO:0046651,lymphocyte proliferation,CD86
+GO:0046651,lymphocyte proliferation,MYD88
+GO:0046651,lymphocyte proliferation,TNFSF9
+GO:0046651,lymphocyte proliferation,ZAP70
+GO:0046651,lymphocyte proliferation,BCL2
+GO:0046651,lymphocyte proliferation,JAK2
+GO:0038094,Fc-gamma receptor signaling pathway,FCGR3A
+GO:0038094,Fc-gamma receptor signaling pathway,MYO1G
+GO:0038094,Fc-gamma receptor signaling pathway,VAV1
+GO:0038094,Fc-gamma receptor signaling pathway,ABL1
+GO:0038094,Fc-gamma receptor signaling pathway,APPL2
+GO:0038094,Fc-gamma receptor signaling pathway,FCER1G
+GO:0006909,phagocytosis,CD300A
+GO:0006909,phagocytosis,CD93
+GO:0006909,phagocytosis,ELMO2
+GO:0006909,phagocytosis,TYROBP
+GO:0006909,phagocytosis,BIN2
+GO:0006909,phagocytosis,ICAM3

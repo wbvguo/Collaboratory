@@ -1,0 +1,61 @@
+gene_name,category
+ZBTB16,Transcription factor
+TBX21,Transcription factor
+GATA3,Transcription factor
+RORC,Transcription factor
+NFKB1,Transcription factor
+JUN,Transcription factor
+GNLY,Cytotoxicity
+GZMA,Cytotoxicity
+GZMB,Cytotoxicity
+PRF1,Cytotoxicity
+FASLG,Cytotoxicity
+TLR1,Cytotoxicity
+TYROBP,Cytotoxicity
+NCR1,NK activating
+NCR2,NK activating
+NCR3,NK activating
+CD96,NK activating
+NCAM1,NK activating
+CRTAM,NK activating
+CEACAM1,NK activating
+KLRC2,NK activating
+KLRC3,NK activating
+CD244,NK activating
+SLAMF7,NK activating
+CD226,NK activating
+KLRK1,NK activating
+KIR3DL1,NK inhibition
+SIGLEC9,NK inhibition
+KLRB1,NK inhibition
+KLRG1,NK inhibition
+KLRD1,NK inhibition
+KIR2DL1,NK inhibition
+KIR2DL3,NK inhibition
+KIR3DL2,NK inhibition
+SIGLEC7,NK inhibition
+KLRC1,NK inhibition
+CTLA4,Inhibitory marker
+PDCD1,Inhibitory marker
+LAG3,Inhibitory marker
+HAVCR2,Inhibitory marker
+TIGIT,Inhibitory marker
+CD28,T-costimulatory
+CD27,T-costimulatory
+TNFRSF14,T-costimulatory
+ICOS,T-costimulatory
+CD2,T-costimulatory
+CD40LG,T-costimulatory
+TNFRSF9,T-costimulatory
+TNFRSF4,T-costimulatory
+TNFRSF25,T-costimulatory
+TNFRSF18,T-costimulatory
+TNFRSF8,T-costimulatory
+CCR1,Inflammatory homing
+CCR2,Inflammatory homing
+CCR3,Inflammatory homing
+CCR5,Inflammatory homing
+CCR6,Inflammatory homing
+CXCR3,Inflammatory homing
+CXCR4,Inflammatory homing
+CXCR6,Inflammatory homing
