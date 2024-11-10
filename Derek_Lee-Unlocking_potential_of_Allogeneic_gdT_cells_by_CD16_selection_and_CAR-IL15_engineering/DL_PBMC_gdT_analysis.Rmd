@@ -6,7 +6,7 @@ output:
 date: "2022-08-15"
 ---
 
-Creator: Wenbin Guo < wbguo@ucla.edu >
+Creator: Wenbin Guo < wbguo[AT]ucla[DOT]edu >
 
 Description: this script is used to perform the following tasks in RNA-seq analysis \
 - batch effects correction \
@@ -18,7 +18,7 @@ Description: this script is used to perform the following tasks in RNA-seq analy
 - data visualization such as heatmap, volcano plot, bar plot, etc. \
 
 Each tool's version can be found in the `sessionInfo` section or from the original paper titled: \
-> Unlocking the Potential of Allogeneic Vδ2 T Cells for Ovarian Cancer Therapy through CD16 Biomarker Selection and CAR/IL-15 Engineering
+> [Unlocking the Potential of Allogeneic Vδ2 T Cells for Ovarian Cancer Therapy through CD16 Biomarker Selection and CAR/IL-15 Engineering](https://www.nature.com/articles/s41467-023-42619-2)
 
 
 Input file: \
