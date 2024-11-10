@@ -155,7 +155,7 @@ adjust_batch = function(count_df, batch, group=NULL,covar_mod=NULL){
 
 ## path
 ```{r}
-project_path = "/home/wbguo/iproject/Cancer_immune"
+project_path = "~/iproject/Cancer_immune"
 
 data_path = paste0(project_path, "/data/")
 save_path = data_path

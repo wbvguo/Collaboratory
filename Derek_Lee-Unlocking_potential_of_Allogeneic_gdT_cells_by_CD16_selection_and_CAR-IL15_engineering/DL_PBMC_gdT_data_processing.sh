@@ -1,4 +1,4 @@
-# Creator: Wenbin Guo <wbguo@ucla.edu>
+# Creator: Wenbin Guo <wbguo[AT]ucla[DOT]edu>
 # Date: 2023-06-20
 # Description:
 # this script is used to trim the raw reads, align them to the reference genome,        \
@@ -17,7 +17,7 @@
 
 
 # set path for quality control and trimming
-working_path=/u/home/w/wbguo/project-liliyang/bulk/
+working_path=$HOME/project-liliyang/bulk/
 raw_reads_path=$working_path/raw_data/
 trm_reads_path=$working_path/reads/
 
